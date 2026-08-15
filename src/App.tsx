@@ -15,8 +15,7 @@ type ChatSession = {
 
 function App() {
 const API_URL =
-    import.meta.env.VITE_API_URL ||
-    "http://localhost:3001";
+  import.meta.env.VITE_API_URL || "";
   const [messages, setMessages] = useState<Message[]>([
     {
       role: "assistant",
