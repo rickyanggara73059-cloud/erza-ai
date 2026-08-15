@@ -223,11 +223,11 @@ useEffect(() => {
 
           try {
             const response = await fetch(
-              `${API_URL}/api/sessions/${session.id}?userId=${encodeURIComponent(userId)}`
-              {
-                method: "DELETE",
-              }
-            );
+  `${API_URL}/api/sessions/${session.id}?userId=${encodeURIComponent(userId)}`,
+  {
+    method: "DELETE",
+  }
+);
 
             const data = await response.json();
 
