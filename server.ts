@@ -821,8 +821,12 @@ app.delete("/api/sessions/:sessionId", async (req, res) => {
 // SERVER
 // ========================================
 
-app.listen(3001, () => {
-  console.log(
-    "Erza AI API berjalan di http://localhost:3001"
-  );
-});
+export default app;
+
+if (!process.env.VERCEL) {
+  app.listen(3001, () => {
+    console.log(
+      "Erza AI API berjalan di http://localhost:3001"
+    );
+  });
+}
