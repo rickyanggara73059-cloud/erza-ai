@@ -547,8 +547,12 @@ app.get("/api/sessions", async (_req, res) => {
 
 const PORT = Number(process.env.PORT) || 3001;
 
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(
-    `Erza AI API berjalan di port ${PORT}`
-  );
-});
+export default app;
+
+if (!process.env.VERCEL) {
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(
+      `Erza AI API berjalan di port ${PORT}`
+    );
+  });
+}
