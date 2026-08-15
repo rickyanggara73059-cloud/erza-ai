@@ -16,6 +16,19 @@ type ChatSession = {
 function App() {
 const API_URL =
   import.meta.env.VITE_API_URL || "";
+
+  const [userId] = useState(() => {
+  const savedUserId = localStorage.getItem("erza_user_id");
+
+  if (savedUserId) {
+    return savedUserId;
+  }
+
+  const newUserId = crypto.randomUUID();
+  localStorage.setItem("erza_user_id", newUserId);
+
+  return newUserId;
+});
   const [messages, setMessages] = useState<Message[]>([
     {
       role: "assistant",
@@ -32,7 +45,7 @@ const [sidebarOpen, setSidebarOpen] = useState(false);
 async function loadSessions() {
   try {
     const response = await fetch(
-  `${API_URL}/api/sessions`
+  `${API_URL}/api/sessions?userId=${encodeURIComponent(userId)}`
 );
 
     const data = await response.json();
@@ -76,6 +89,7 @@ useEffect(() => {
    body: JSON.stringify({
   message: userText,
   sessionId,
+  userId,
 }),
       });
 
@@ -158,7 +172,7 @@ useEffect(() => {
         onClick={async () => {
           try {
             const response = await fetch(
-             `${API_URL}/api/sessions/${session.id}/messages`
+             `${API_URL}/api/sessions/${session.id}/messages?userId=${encodeURIComponent(userId)}`
             );
 
             const data = await response.json();
@@ -209,7 +223,7 @@ useEffect(() => {
 
           try {
             const response = await fetch(
-              `${API_URL}/api/sessions/${session.id}`,
+              `${API_URL}/api/sessions/${session.id}?userId=${encodeURIComponent(userId)}`
               {
                 method: "DELETE",
               }
