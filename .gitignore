@@ -1,6 +1,15 @@
 node_modules/
 dist/
+.gradle/
+build/
+app/build/
+
+android.keystore
+*.apk
+*.aab
+*.idsig
+
 .env
 .env.local
-.env.*.local
-*.log
+
+.twa-manifest*

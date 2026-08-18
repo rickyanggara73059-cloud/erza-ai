@@ -1,340 +1,1634 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ChangeEvent } from "react";
+import {
+  Bot,
+  Menu,
+  Plus,
+  Send,
+  Mic,
+  Sparkles,
+  User,
+  X,
+  MessageSquare,
+  Trash2,
+} from "lucide-react";
+
+import { supabase } from "./lib/supabase";
 import "./App.css";
 
-type Message = {
-  role: "user" | "assistant";
-  content: string;
+type SpeechRecognitionEventLike = Event & {
+  results: {
+    [index: number]: {
+      [index: number]: {
+        transcript: string;
+      };
+    };
+  };
 };
 
-type ChatSession = {
+type SpeechRecognitionErrorEventLike = Event & {
+  error?: string;
+};
+
+type SpeechRecognitionInstance = {
+  lang: string;
+  continuous: boolean;
+  interimResults: boolean;
+  start: () => void;
+  stop: () => void;
+  onresult: ((event: SpeechRecognitionEventLike) => void) | null;
+  onerror: ((event: SpeechRecognitionErrorEventLike) => void) | null;
+  onend: (() => void) | null;
+};
+
+type SpeechRecognitionConstructor = new () => SpeechRecognitionInstance;
+
+declare global {
+  interface Window {
+    SpeechRecognition?: SpeechRecognitionConstructor;
+    webkitSpeechRecognition?: SpeechRecognitionConstructor;
+  }
+}
+
+type Message = {
+  id: string;
+  role: "erza" | "user";
+  text: string;
+};
+
+type Conversation = {
   id: string;
   title: string;
   created_at: string;
   updated_at: string;
 };
 
-function App() {
-const API_URL =
-  import.meta.env.VITE_API_URL || "";
+const INITIAL_MESSAGE: Message = {
+  id: "initial",
+  role: "erza",
+  text: "Halo Papa 👋\nAda yang bisa Erza bantu hari ini?",
+};
 
-  const [userId] = useState(() => {
-  const savedUserId = localStorage.getItem("erza_user_id");
+const GUEST_USER_ID_KEY = "erza-ai-guest-user-id";
 
-  if (savedUserId) {
-    return savedUserId;
+function getGuestUserId() {
+  const saved = localStorage.getItem(GUEST_USER_ID_KEY);
+
+  if (saved) {
+    return saved;
   }
 
-  const newUserId = crypto.randomUUID();
-  localStorage.setItem("erza_user_id", newUserId);
-
-  return newUserId;
-});
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      role: "assistant",
-      content:
-        "Halo Papa 👋 Saya Erza AI. Ada yang bisa saya bantu?",
-    },
-  ]);
-
-  const [input, setInput] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [sessionId, setSessionId] = useState<string | null>(null);
-const [sessions, setSessions] = useState<ChatSession[]>([]);
-const [sidebarOpen, setSidebarOpen] = useState(false);
-async function loadSessions() {
-  try {
-    const response = await fetch(
-  `${API_URL}/api/sessions?userId=${encodeURIComponent(userId)}`
-);
-
-    const data = await response.json();
-
-    if (!response.ok) {
-      throw new Error(data.error || "Gagal mengambil history");
-    }
-
-    setSessions(data.sessions || []);
-  } catch (error) {
-    console.error("LOAD SESSIONS ERROR:", error);
-  }
+  const id = crypto.randomUUID();
+  localStorage.setItem(GUEST_USER_ID_KEY, id);
+  return id;
 }
 
-useEffect(() => {
-  loadSessions();
-}, []);
+const SUGGESTIONS = [
+  {
+    icon: "💰",
+    label: "Hitung HPP",
+    text: "Bantu saya menghitung HPP",
+  },
+  {
+    icon: "💻",
+    label: "Buat website",
+    text: "Bantu saya membuat website",
+  },
+  {
+    icon: "📢",
+    label: "Buat promosi",
+    text: "Bantu saya membuat promosi",
+  },
+  {
+    icon: "📊",
+    label: "Analisa usaha",
+    text: "Bantu saya menganalisa usaha",
+  },
+];
 
-  async function sendMessage() {
-    if (!input.trim() || loading) return;
+function App() {
+  const [message, setMessage] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [listening, setListening] = useState(false);
+  const [voiceEnabled, setVoiceEnabled] = useState(true);
+  const [attachment, setAttachment] = useState<File | null>(null);
+  const [attachmentPreview, setAttachmentPreview] = useState<string | null>(null);
+  const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
 
-    const userText = input.trim();
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+
+  const [messages, setMessages] = useState<Message[]>([
+    INITIAL_MESSAGE,
+  ]);
+
+  const [conversations, setConversations] = useState<
+    Conversation[]
+  >([]);
+
+  const [conversationId, setConversationId] =
+    useState<string | null>(null);
+
+  const [userId] = useState<string>(() =>
+    getGuestUserId(),
+  );
+
+  // ========================================
+  // VOICE
+  // ========================================
+
+  function getSpeechRecognition() {
+    if (typeof window === "undefined") return null;
+
+    const Recognition =
+      window.SpeechRecognition ||
+      window.webkitSpeechRecognition;
+
+    return Recognition ? new Recognition() : null;
+  }
+
+  function startVoiceInput() {
+    if (loading || listening) return;
+
+    const recognition = getSpeechRecognition();
+
+    if (!recognition) {
+      alert(
+        "Browser Papa belum mendukung voice input. Gunakan Chrome atau Edge versi terbaru.",
+      );
+      return;
+    }
+
+    recognition.lang = "id-ID";
+    recognition.continuous = false;
+    recognition.interimResults = false;
+
+    recognition.onresult = (event) => {
+      const transcript =
+        event.results[0]?.[0]?.transcript?.trim();
+
+      if (transcript) {
+        setMessage((current) =>
+          current.trim()
+            ? `${current.trim()} ${transcript}`
+            : transcript,
+        );
+      }
+    };
+
+    recognition.onerror = (event) => {
+      console.error("🎙️ Voice input error:", event.error);
+      setListening(false);
+    };
+
+    recognition.onend = () => {
+      setListening(false);
+    };
+
+    try {
+      setListening(true);
+      recognition.start();
+    } catch (error) {
+      console.error("🎙️ Voice start error:", error);
+      setListening(false);
+    }
+  }
+
+  function toggleVoiceOutput() {
+    setVoiceEnabled((current) => {
+      const next = !current;
+
+      if (!next && "speechSynthesis" in window) {
+        window.speechSynthesis.cancel();
+      }
+
+      return next;
+    });
+  }
+
+  function speakText(text: string) {
+    if (
+      !voiceEnabled ||
+      typeof window === "undefined" ||
+      !("speechSynthesis" in window)
+    ) {
+      return;
+    }
+
+    const cleaned = text
+      .replace(/```[\s\S]*?```/g, " ")
+      .replace(/[`*_#>]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    if (!cleaned) return;
+
+    window.speechSynthesis.cancel();
+
+    const utterance =
+      new SpeechSynthesisUtterance(cleaned);
+
+    const voices = window.speechSynthesis.getVoices();
+
+    // Prioritaskan voice laki-laki berbahasa Indonesia.
+    const maleIdVoice = voices.find((voice) => {
+      const name = voice.name.toLowerCase();
+      const lang = voice.lang.toLowerCase();
+
+      return (
+        (lang.startsWith("id") ||
+          name.includes("indonesia")) &&
+        (
+          name.includes("male") ||
+          name.includes("pria") ||
+          name.includes("man") ||
+          name.includes("laki")
+        )
+      );
+    });
+
+    // Fallback ke voice Indonesia apa pun.
+    const anyIdVoice = voices.find((voice) => {
+      const lang = voice.lang.toLowerCase();
+      const name = voice.name.toLowerCase();
+
+      return (
+        lang.startsWith("id") ||
+        name.includes("indonesia")
+      );
+    });
+
+    // Fallback terakhir: voice laki-laki apa pun yang tersedia.
+    const anyMaleVoice = voices.find((voice) => {
+      const name = voice.name.toLowerCase();
+
+      return (
+        name.includes("male") ||
+        name.includes("man") ||
+        name.includes("pria") ||
+        name.includes("laki")
+      );
+    });
+
+    const selectedVoice =
+      maleIdVoice ||
+      anyIdVoice ||
+      anyMaleVoice;
+
+    if (selectedVoice) {
+      utterance.voice = selectedVoice;
+      utterance.lang = selectedVoice.lang;
+    } else {
+      utterance.lang = "id-ID";
+    }
+
+    utterance.rate = 0.96;
+    utterance.pitch = 0.92;
+    utterance.volume = 1;
+
+    window.speechSynthesis.speak(utterance);
+  }
+
+  useEffect(() => {
+    return () => {
+      if (
+        typeof window !== "undefined" &&
+        "speechSynthesis" in window
+      ) {
+        window.speechSynthesis.cancel();
+      }
+    };
+  }, []);
+
+  // ========================================
+  // LOAD AWAL
+  // ========================================
+
+  useEffect(() => {
+    initializeApp();
+  }, []);
+
+  // ========================================
+  // INITIALIZE APP
+  // ========================================
+
+  async function initializeApp() {
+    console.log("🚀 Memulai Erza AI...");
+
+    const latestConversation =
+      await loadConversations();
+
+    // Jika ada percakapan, otomatis buka
+    // percakapan paling baru.
+    if (latestConversation) {
+      console.log(
+        "🔄 Membuka percakapan terakhir:",
+        latestConversation.id,
+      );
+
+      await loadMessages(
+        latestConversation.id,
+      );
+    } else {
+      console.log(
+        "ℹ️ Belum ada percakapan.",
+      );
+    }
+  }
+
+  // ========================================
+  // LOAD RIWAYAT
+  // ========================================
+
+  async function loadConversations(): Promise<
+    Conversation | null
+  > {
+    try {
+      const { data, error } = await supabase
+        .from("conversations")
+        .select(
+          "id, title, created_at, updated_at",
+        )
+        .order("updated_at", {
+          ascending: false,
+        });
+
+      if (error) {
+        console.error(
+          "❌ LOAD CONVERSATIONS ERROR:",
+          error,
+        );
+
+        return null;
+      }
+
+      const list = data ?? [];
+
+      setConversations(list);
+
+      // Conversation pertama adalah yang
+      // paling baru karena sudah diurutkan.
+      return list[0] ?? null;
+    } catch (error) {
+      console.error(
+        "❌ LOAD CONVERSATIONS EXCEPTION:",
+        error,
+      );
+
+      return null;
+    }
+  }
+
+  // ========================================
+  // CREATE CONVERSATION
+  // ========================================
+
+  async function createConversation(
+    firstMessage: string,
+  ): Promise<string | null> {
+    try {
+      const title =
+        firstMessage.trim().slice(0, 60) ||
+        "Percakapan Baru";
+
+      console.log(
+        "📝 Membuat percakapan:",
+        title,
+      );
+
+      const { data, error } = await supabase
+        .from("conversations")
+        .insert({
+          title,
+        })
+        .select(
+          "id, title, created_at, updated_at",
+        )
+        .single();
+
+      if (error) {
+        console.error(
+          "❌ CREATE CONVERSATION ERROR:",
+          error,
+        );
+
+        throw new Error(
+          `Supabase gagal membuat percakapan: ${error.message}`,
+        );
+      }
+
+      if (!data?.id) {
+        throw new Error(
+          "Supabase membuat percakapan tetapi ID tidak ditemukan.",
+        );
+      }
+
+      console.log(
+        "✅ Conversation dibuat:",
+        data.id,
+      );
+
+      setConversations((current) => [
+        data,
+        ...current.filter(
+          (item) => item.id !== data.id,
+        ),
+      ]);
+
+      setConversationId(data.id);
+
+      return data.id;
+    } catch (error) {
+      console.error(
+        "❌ CREATE CONVERSATION EXCEPTION:",
+        error,
+      );
+
+      throw error;
+    }
+  }
+
+  // ========================================
+  // SAVE MESSAGE
+  // ========================================
+
+  async function saveMessage(
+    activeConversationId: string,
+    role: "user" | "erza",
+    text: string,
+  ) {
+    console.log(
+      `💾 Menyimpan ${role} message...`,
+    );
+
+    const { error } = await supabase
+      .from("messages")
+      .insert({
+        conversation_id:
+          activeConversationId,
+        role,
+        content: text,
+      });
+
+    if (error) {
+      console.error(
+        `❌ SAVE ${role.toUpperCase()} MESSAGE ERROR:`,
+        error,
+      );
+
+      throw new Error(
+        `Gagal menyimpan pesan ${role}: ${error.message}`,
+      );
+    }
+
+    console.log(
+      `✅ ${role} message tersimpan.`,
+    );
+
+    const { error: updateError } =
+      await supabase
+        .from("conversations")
+        .update({
+          updated_at:
+            new Date().toISOString(),
+        })
+        .eq(
+          "id",
+          activeConversationId,
+        );
+
+    if (updateError) {
+      console.warn(
+        "⚠️ Gagal update waktu conversation:",
+        updateError,
+      );
+    }
+  }
+
+  // ========================================
+  // LOAD MESSAGE
+  // ========================================
+
+  async function loadMessages(
+    activeConversationId: string,
+  ) {
+    try {
+      console.log(
+        "📖 Membuka conversation:",
+        activeConversationId,
+      );
+
+      const { data, error } =
+        await supabase
+          .from("messages")
+          .select(
+            "id, role, content, created_at",
+          )
+          .eq(
+            "conversation_id",
+            activeConversationId,
+          )
+          .order("created_at", {
+            ascending: true,
+          });
+
+      if (error) {
+        console.error(
+          "❌ LOAD MESSAGES ERROR:",
+          error,
+        );
+
+        return;
+      }
+
+      const loadedMessages: Message[] =
+        (data ?? []).map((item) => ({
+          id: item.id,
+          role:
+            item.role === "user"
+              ? "user"
+              : "erza",
+          text: item.content,
+        }));
+
+      setMessages(
+        loadedMessages.length > 0
+          ? loadedMessages
+          : [INITIAL_MESSAGE],
+      );
+
+      setConversationId(
+        activeConversationId,
+      );
+
+      setHistoryOpen(false);
+      setMenuOpen(false);
+
+      console.log(
+        "✅ Messages berhasil dimuat:",
+        loadedMessages.length,
+      );
+    } catch (error) {
+      console.error(
+        "❌ LOAD MESSAGES EXCEPTION:",
+        error,
+      );
+    }
+  }
+
+  // ========================================
+  // CHAT KE GROQ
+  // ========================================
+
+  async function askErza(
+    text: string,
+    history: Message[],
+    attachmentData?: {
+      name: string;
+      type: string;
+      data: string;
+    } | null,
+  ) {
+    const apiUrl =
+      import.meta.env.VITE_API_URL ||
+      "http://localhost:3001";
+
+    console.log(
+      "⚡ Menghubungi Erza backend:",
+      apiUrl,
+    );
+
+    const response = await fetch(
+      `${apiUrl}/api/chat`,
+      {
+        method: "POST",
+
+        headers: {
+          "Content-Type":
+            "application/json",
+        },
+
+        body: JSON.stringify({
+          message: text,
+          userId,
+
+          history: history
+            .filter(
+              (item) =>
+                item.id !== "initial",
+            )
+            .map((item) => ({
+              role: item.role,
+              text: item.text,
+            })),
+
+          attachment: attachmentData || null,
+        }),
+      },
+    );
+
+    let data: any = null;
+
+    try {
+      data = await response.json();
+    } catch {
+      throw new Error(
+        `Backend mengembalikan response yang tidak valid (${response.status}).`,
+      );
+    }
+
+    if (!response.ok) {
+      throw new Error(
+        data?.error ||
+          `Backend Erza gagal (${response.status}).`,
+      );
+    }
+
+    if (
+      typeof data?.answer !== "string" ||
+      !data.answer.trim()
+    ) {
+      throw new Error(
+        data?.error ||
+          "Backend Erza tidak mengembalikan jawaban.",
+      );
+    }
+
+    return data.answer.trim();
+  }
+
+  // ========================================
+  // ATTACHMENT
+  // ========================================
+
+  function handleFileSelect(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    if (attachmentPreview) URL.revokeObjectURL(attachmentPreview);
+
+    if (
+      file.type.startsWith("image/") &&
+      file.size > 12 * 1024 * 1024
+    ) {
+      alert(
+        "Foto terlalu besar. Maksimal 12 MB.",
+      );
+      return;
+    }
+
+    setAttachment(file);
+    setAttachmentMenuOpen(false);
+
+    if (file.type.startsWith("image/")) {
+      setAttachmentPreview(URL.createObjectURL(file));
+    } else {
+      setAttachmentPreview(null);
+    }
+
+    event.target.value = "";
+  }
+
+  function removeAttachment() {
+    if (attachmentPreview) URL.revokeObjectURL(attachmentPreview);
+    setAttachment(null);
+    setAttachmentPreview(null);
+  }
+
+  function formatFileSize(size: number) {
+    if (size < 1024) return `${size} B`;
+    if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`;
+    return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+  // ========================================
+  // KIRIM PESAN
+  // ========================================
+
+  async function compressImage(
+    file: File,
+  ): Promise<File> {
+    if (!file.type.startsWith("image/")) {
+      return file;
+    }
+
+    // Foto kecil sudah cukup ringan.
+    if (file.size <= 1.5 * 1024 * 1024) {
+      return file;
+    }
+
+    return new Promise((resolve, reject) => {
+      const image = new Image();
+      const objectUrl = URL.createObjectURL(file);
+
+      image.onload = () => {
+        URL.revokeObjectURL(objectUrl);
+
+        const maxWidth = 1600;
+        const scale = Math.min(
+          1,
+          maxWidth / image.width,
+          maxWidth / image.height,
+        );
+
+        const width = Math.max(
+          1,
+          Math.round(image.width * scale),
+        );
+
+        const height = Math.max(
+          1,
+          Math.round(image.height * scale),
+        );
+
+        const canvas =
+          document.createElement("canvas");
+
+        canvas.width = width;
+        canvas.height = height;
+
+        const context =
+          canvas.getContext("2d");
+
+        if (!context) {
+          reject(
+            new Error(
+              "Browser tidak dapat memproses gambar.",
+            ),
+          );
+          return;
+        }
+
+        context.drawImage(
+          image,
+          0,
+          0,
+          width,
+          height,
+        );
+
+        canvas.toBlob(
+          (blob) => {
+            if (!blob) {
+              reject(
+                new Error(
+                  "Gagal mengompres foto.",
+                ),
+              );
+              return;
+            }
+
+            const compressedFile =
+              new File(
+                [blob],
+                file.name.replace(
+                  /\.[^/.]+$/,
+                  ".jpg",
+                ),
+                {
+                  type: "image/jpeg",
+                  lastModified:
+                    Date.now(),
+                },
+              );
+
+            resolve(compressedFile);
+          },
+          "image/jpeg",
+          0.78,
+        );
+      };
+
+      image.onerror = () => {
+        URL.revokeObjectURL(objectUrl);
+        reject(
+          new Error(
+            "Foto tidak dapat diproses.",
+          ),
+        );
+      };
+
+      image.src = objectUrl;
+    });
+  }
+
+  async function fileToBase64(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+
+      reader.onload = () => {
+        const result = reader.result;
+
+        if (typeof result !== "string") {
+          reject(new Error("File tidak dapat dibaca."));
+          return;
+        }
+
+        const commaIndex = result.indexOf(",");
+
+        if (commaIndex === -1) {
+          reject(new Error("Format file tidak valid."));
+          return;
+        }
+
+        resolve(result.slice(commaIndex + 1));
+      };
+
+      reader.onerror = () => {
+        reject(new Error("Gagal membaca file."));
+      };
+
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function handleSend() {
+    const text = message.trim();
+
+    if ((!text && !attachment) || loading) {
+      return;
+    }
+
+    setLoading(true);
+    setMessage("");
+
+    const attachmentLabel = attachment
+      ? `📎 ${attachment.name} (${formatFileSize(attachment.size)})`
+      : "";
+
+    const displayText =
+      text && attachmentLabel
+        ? `${text}\n\n${attachmentLabel}`
+        : text || attachmentLabel;
+
+    const userMessage: Message = {
+      id: `user-${Date.now()}`,
+      role: "user",
+      text: displayText,
+    };
+
+    const historyForAI = [...messages];
 
     setMessages((current) => [
       ...current,
-      {
-        role: "user",
-        content: userText,
-      },
+      userMessage,
     ]);
 
-    setInput("");
-    setLoading(true);
-
     try {
-      const response = await fetch(`${API_URL}/api/chat`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-   body: JSON.stringify({
-  message: userText,
-  sessionId,
-  userId,
-}),
-      });
+      // ====================================
+      // BUAT / PAKAI CONVERSATION
+      // ====================================
 
-      const data = await response.json();
+      let activeConversationId =
+        conversationId;
 
-      if (!response.ok) {
-        throw new Error(data.error || "API error");
+      if (!activeConversationId) {
+        activeConversationId =
+          await createConversation(displayText);
       }
 
-	if (data.sessionId) {
-  setSessionId(data.sessionId);
-}
+      if (!activeConversationId) {
+        throw new Error(
+          "Conversation ID tidak tersedia.",
+        );
+      }
 
-     
+      // ====================================
+      // SIMPAN PESAN PAPA
+      // ====================================
+
+      await saveMessage(
+        activeConversationId,
+        "user",
+        displayText,
+      );
+
+      // ====================================
+      // TANYA GROQ
+      // ====================================
+
+      let attachmentPayload: {
+        name: string;
+        type: string;
+        data: string;
+      } | null = null;
+
+      if (attachment) {
+        if (
+          attachment.type.startsWith("image/") &&
+          attachment.size > 12 * 1024 * 1024
+        ) {
+          throw new Error(
+            "Foto terlalu besar. Maksimal 12 MB sebelum kompresi.",
+          );
+        }
+
+        const fileForUpload =
+          await compressImage(attachment);
+
+        console.log(
+          "📷 Ukuran foto:",
+          formatFileSize(attachment.size),
+          "→",
+          formatFileSize(fileForUpload.size),
+        );
+
+        if (
+          fileForUpload.size >
+          2.5 * 1024 * 1024
+        ) {
+          throw new Error(
+            "Foto masih terlalu besar setelah kompresi. Pilih foto yang lebih kecil.",
+          );
+        }
+
+        const base64 =
+          await fileToBase64(
+            fileForUpload,
+          );
+
+        attachmentPayload = {
+          name: fileForUpload.name,
+          type: fileForUpload.type,
+          data: base64,
+        };
+      }
+
+      const answer = await askErza(
+        text,
+        historyForAI,
+        attachmentPayload,
+      );
+
+      // ====================================
+      // JAWABAN ERZA
+      // ====================================
+
+      const erzaMessage: Message = {
+        id: `erza-${Date.now()}`,
+        role: "erza",
+        text: answer,
+      };
+
       setMessages((current) => [
         ...current,
-        {
-          role: "assistant",
-          content: data.answer,
-        },
+        erzaMessage,
       ]);
-    } catch (error) {
-      console.error("CHAT ERROR:", error);
 
-      const errorMessage =
+      speakText(answer);
+
+      // ====================================
+      // SIMPAN JAWABAN ERZA
+      // ====================================
+
+      await saveMessage(
+        activeConversationId,
+        "erza",
+        answer,
+      );
+
+      // ====================================
+      // REFRESH RIWAYAT
+      // ====================================
+
+      await loadConversations();
+
+      removeAttachment();
+
+      console.log(
+        "🎉 Chat selesai dengan sukses.",
+      );
+    } catch (error) {
+      console.error(
+        "❌ DETAIL CHAT ERROR:",
+        error,
+      );
+
+      const errorText =
         error instanceof Error
           ? error.message
-          : "Terjadi kesalahan.";
+          : String(error);
+
+      const errorMessage: Message = {
+        id: `error-${Date.now()}`,
+        role: "erza",
+        text:
+          "Maaf Papa, Erza menemukan masalah:\n\n" +
+          errorText,
+      };
 
       setMessages((current) => [
         ...current,
-        {
-          role: "assistant",
-          content: `Error: ${errorMessage}`,
-        },
+        errorMessage,
       ]);
     } finally {
       setLoading(false);
     }
   }
 
-  return (
-    <div className="app">
+  // ========================================
+  // NEW CONVERSATION
+  // ========================================
 
-  <aside
-  className={`chat-sidebar ${
-    sidebarOpen ? "open" : ""
-  }`}
->
-    <div className="sidebar-header">
-      <h2>Erza AI</h2>
+  function newConversation() {
+    setConversationId(null);
 
-      <button
-        onClick={() => {
-          setSessionId(null);
+    setMessages([
+      {
+        id: `new-${Date.now()}`,
+        role: "erza",
+        text:
+          "Halo Papa 👋\nPercakapan baru siap digunakan.",
+      },
+    ]);
 
-          setMessages([
-            {
-              role: "assistant",
-              content:
-                "Halo Papa 👋 Saya Erza AI. Ada yang bisa saya bantu?",
-            },
-          ]);
-        }}
-      >
-        + Percakapan Baru
-      </button>
-    </div>
+    setMessage("");
 
-    <div className="session-list">
-  {sessions.map((session) => (
-    <div
-      key={session.id}
-      className={`session-row ${
-        session.id === sessionId ? "active" : ""
-      }`}
-    >
-      <button
-        className="session-item"
-        onClick={async () => {
-          try {
-            const response = await fetch(
-             `${API_URL}/api/sessions/${session.id}/messages?userId=${encodeURIComponent(userId)}`
-            );
-
-            const data = await response.json();
-
-            if (!response.ok) {
-              throw new Error(
-                data.error ||
-                  "Gagal membuka percakapan"
-              );
-            }
-
-            setSessionId(session.id);
-	setSidebarOpen(false);
-
-            setMessages(
-              data.messages.map(
-                (message: {
-                  role: "user" | "assistant";
-                  content: string;
-                }) => ({
-                  role: message.role,
-                  content: message.content,
-                })
-              )
-            );
-          } catch (error) {
-            console.error(
-              "LOAD CHAT ERROR:",
-              error
-            );
-          }
-        }}
-      >
-        {session.title}
-      </button>
-
-      <button
-        className="delete-session"
-        title="Hapus percakapan"
-        onClick={async (event) => {
-          event.stopPropagation();
-
-          const confirmed = window.confirm(
-            "Papa yakin ingin menghapus percakapan ini?"
-          );
-
-          if (!confirmed) return;
-
-          try {
-            const response = await fetch(
-  `${API_URL}/api/sessions/${session.id}?userId=${encodeURIComponent(userId)}`,
-  {
-    method: "DELETE",
+    setHistoryOpen(false);
+    setMenuOpen(false);
   }
-);
 
-            const data = await response.json();
+  // ========================================
+  // DELETE CONVERSATION
+  // ========================================
 
-            if (!response.ok) {
-              throw new Error(
-                data.error ||
-                  "Gagal menghapus percakapan"
-              );
-            }
+  async function deleteConversation(
+    id: string,
+  ) {
+    const confirmed = window.confirm(
+      "Hapus percakapan ini?",
+    );
 
-            setSessions((current) =>
-              current.filter(
-                (item) => item.id !== session.id
-              )
-            );
+    if (!confirmed) {
+      return;
+    }
 
-            if (session.id === sessionId) {
-              setSessionId(null);
-		setSidebarOpen(false);
+    try {
+      const { error } =
+        await supabase
+          .from("conversations")
+          .delete()
+          .eq("id", id);
 
-              setMessages([
-                {
-                  role: "assistant",
-                  content:
-                    "Halo Papa 👋 Saya Erza AI. Ada yang bisa saya bantu?",
-                },
-              ]);
-            }
-          } catch (error) {
-            console.error(
-              "DELETE SESSION ERROR:",
-              error
-            );
-          }
-        }}
-      >
-        🗑️
-      </button>
-    </div>
-  ))}
-</div>
+      if (error) {
+        console.error(
+          "❌ DELETE ERROR:",
+          error,
+        );
 
-  </aside>
-{sidebarOpen && (
-  <div
-    className="sidebar-overlay"
-    onClick={() => setSidebarOpen(false)}
-  />
-)}
+        alert(
+          `Gagal menghapus:\n${error.message}`,
+        );
 
-  <div className="chat-container">
+        return;
+      }
 
-<button
-  className="mobile-menu-button"
-  onClick={() => setSidebarOpen(true)}
-  aria-label="Buka riwayat percakapan"
->
-  ☰
-</button>
+      const remaining =
+        conversations.filter(
+          (item) => item.id !== id,
+        );
 
-        <header className="chat-header">
-          <div className="avatar">E</div>
+      setConversations(remaining);
 
-          <div>
-            <h1>Erza AI</h1>
-            <p>Groq AI Assistant â€¢ Online</p>
-          </div>
-        </header>
+      // Jika yang dihapus adalah chat
+      // yang sedang dibuka
+      if (conversationId === id) {
+        if (remaining.length > 0) {
+          await loadMessages(
+            remaining[0].id,
+          );
+        } else {
+          newConversation();
+        }
+      }
 
-        <main className="chat-messages">
-          {messages.map((message, index) => (
-            <div
-              key={index}
-              className={`message ${message.role}`}
-            >
-              {message.content}
+      console.log(
+        "🗑️ Conversation dihapus:",
+        id,
+      );
+    } catch (error) {
+      console.error(
+        "❌ DELETE EXCEPTION:",
+        error,
+      );
+    }
+  }
+
+  // ========================================
+  // SUGGESTION
+  // ========================================
+
+  function chooseSuggestion(
+    text: string,
+  ) {
+    setMessage(text);
+  }
+
+  // ========================================
+  // RENDER
+  // ========================================
+
+  return (
+    <div className="app-shell">
+      {/* HEADER */}
+
+      <header className="topbar">
+        <div className="topbar-inner">
+          <div className="brand">
+            <div className="brand-icon">
+              <Sparkles
+                size={18}
+                strokeWidth={2.3}
+              />
             </div>
-          ))}
+
+            <div className="brand-text">
+              <strong>
+                Erza AI
+              </strong>
+
+              <span>
+                Asisten AI Papa
+              </span>
+            </div>
+          </div>
+
+          <button
+            className="menu-button"
+            onClick={() =>
+              setMenuOpen(
+                (value) => !value,
+              )
+            }
+            aria-label="Menu"
+          >
+            {menuOpen ? (
+              <X size={20} />
+            ) : (
+              <Menu size={20} />
+            )}
+          </button>
+        </div>
+
+        {/* MENU */}
+
+        {menuOpen && (
+          <div className="mobile-menu">
+            <button
+              onClick={
+                newConversation
+              }
+            >
+              <Plus size={16} />
+              Percakapan Baru
+            </button>
+
+            <button
+              onClick={() => {
+                setHistoryOpen(true);
+                setMenuOpen(false);
+              }}
+            >
+              <MessageSquare
+                size={16}
+              />
+              Riwayat Percakapan
+            </button>
+
+            <button>
+              ⚙️ Pengaturan
+            </button>
+          </div>
+        )}
+      </header>
+
+      {/* HISTORY */}
+
+      {historyOpen && (
+        <div className="history-overlay">
+          <div className="history-panel">
+            <div className="history-header">
+              <div>
+                <strong>
+                  Riwayat Percakapan
+                </strong>
+
+                <span>
+                  Percakapan Papa
+                </span>
+              </div>
+
+              <button
+                onClick={() =>
+                  setHistoryOpen(false)
+                }
+                aria-label="Tutup"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <button
+              className="new-chat-button"
+              onClick={
+                newConversation
+              }
+            >
+              <Plus size={17} />
+              Percakapan Baru
+            </button>
+
+            <div className="history-list">
+              {conversations.length ===
+              0 ? (
+                <div className="empty-history">
+                  <MessageSquare
+                    size={28}
+                  />
+
+                  <p>
+                    Belum ada riwayat
+                    percakapan.
+                  </p>
+                </div>
+              ) : (
+                conversations.map(
+                  (conversation) => (
+                    <div
+                      className={`history-item ${
+                        conversation.id ===
+                        conversationId
+                          ? "active"
+                          : ""
+                      }`}
+                      key={
+                        conversation.id
+                      }
+                    >
+                      <button
+                        className="history-main"
+                        onClick={() =>
+                          loadMessages(
+                            conversation.id,
+                          )
+                        }
+                      >
+                        <MessageSquare
+                          size={17}
+                        />
+
+                        <span>
+                          {
+                            conversation.title
+                          }
+                        </span>
+                      </button>
+
+                      <button
+                        className="history-delete"
+                        onClick={() =>
+                          deleteConversation(
+                            conversation.id,
+                          )
+                        }
+                        aria-label="Hapus percakapan"
+                      >
+                        <Trash2
+                          size={15}
+                        />
+                      </button>
+                    </div>
+                  ),
+                )
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MAIN */}
+
+      <main className="chat-container">
+        {/* WELCOME */}
+
+        {messages.length === 1 &&
+          !loading && (
+            <section className="hero-welcome">
+              <div className="erza-orb">
+                <Bot
+                  size={34}
+                  strokeWidth={1.8}
+                />
+
+                <span className="orb-glow" />
+              </div>
+
+              <div className="welcome-text">
+                <div className="eyebrow">
+                  <Sparkles size={12} />
+                  ERZA AI
+                </div>
+
+                <h1>
+                  Halo Papa{" "}
+                  <span>👋</span>
+                </h1>
+
+                <p>
+                  Erza siap membantu
+                  Papa
+                  <br />
+                  menyelesaikan
+                  berbagai kebutuhan.
+                </p>
+              </div>
+            </section>
+          )}
+
+        {/* MESSAGES */}
+
+        <section className="messages">
+          {messages.map(
+            (item, index) => (
+              <div
+                key={item.id}
+                className={`message-row ${item.role}`}
+                style={{
+                  animationDelay: `${
+                    index * 40
+                  }ms`,
+                }}
+              >
+                {item.role ===
+                  "erza" && (
+                  <div className="small-avatar erza-small">
+                    <Bot size={15} />
+                  </div>
+                )}
+
+                <div className="message-bubble">
+                  {item.text
+                    .split("\n")
+                    .map(
+                      (
+                        line,
+                        lineIndex,
+                      ) => (
+                        <span
+                          key={
+                            lineIndex
+                          }
+                        >
+                          {line}
+
+                          {lineIndex <
+                            item.text
+                              .split(
+                                "\n",
+                              )
+                              .length -
+                              1 && (
+                            <br />
+                          )}
+                        </span>
+                      ),
+                    )}
+                </div>
+
+                {item.role ===
+                  "user" && (
+                  <div className="small-avatar user-small">
+                    <User size={15} />
+                  </div>
+                )}
+              </div>
+            ),
+          )}
+
+          {/* LOADING */}
 
           {loading && (
-            <div className="message assistant">
-              Erza sedang berpikir... 🤔
+            <div className="message-row erza">
+              <div className="small-avatar erza-small">
+                <Bot size={15} />
+              </div>
+
+              <div className="message-bubble typing-bubble">
+                <span className="typing-dot" />
+                <span className="typing-dot" />
+                <span className="typing-dot" />
+              </div>
             </div>
           )}
-        </main>
+        </section>
 
-        <footer className="chat-input">
+        {/* SUGGESTIONS */}
+
+        {messages.length === 1 &&
+          !loading && (
+            <section className="suggestion-section">
+              <div className="section-label">
+                <span />
+                Coba tanyakan kepada
+                Erza
+                <span />
+              </div>
+
+              <div className="suggestion-grid">
+                {SUGGESTIONS.map(
+                  (item) => (
+                    <button
+                      key={
+                        item.label
+                      }
+                      className="suggestion-card"
+                      onClick={() =>
+                        chooseSuggestion(
+                          item.text,
+                        )
+                      }
+                    >
+                      <span className="suggestion-icon">
+                        {
+                          item.icon
+                        }
+                      </span>
+
+                      <span className="suggestion-content">
+                        <strong>
+                          {
+                            item.label
+                          }
+                        </strong>
+
+                        <small>
+                          Tanyakan kepada
+                          Erza
+                        </small>
+                      </span>
+                    </button>
+                  ),
+                )}
+              </div>
+            </section>
+          )}
+
+        <div className="ai-status">
+          <span className="status-dot" />
+
+          {loading
+            ? "Erza sedang berpikir..."
+            : "Erza siap membantu Papa"}
+        </div>
+      </main>
+
+      {/* COMPOSER */}
+
+      <div className="composer-area">
+        {attachment && (
+          <div className="attachment-preview">
+            <div className="attachment-preview-main">
+              {attachmentPreview ? (
+                <img src={attachmentPreview} alt={attachment.name} />
+              ) : (
+                <div className="attachment-file-icon">
+                  <MessageSquare size={18} />
+                </div>
+              )}
+              <div className="attachment-info">
+                <strong>{attachment.name}</strong>
+                <span>{formatFileSize(attachment.size)}</span>
+              </div>
+            </div>
+            <button
+              className="attachment-remove"
+              onClick={removeAttachment}
+              aria-label="Hapus lampiran"
+            >
+              <X size={16} />
+            </button>
+          </div>
+        )}
+
+        <div className="composer">
+          <button
+            className={`composer-plus ${attachmentMenuOpen ? "active" : ""}`}
+            aria-label="Tambah"
+            onClick={() => setAttachmentMenuOpen((value) => !value)}
+          >
+            {attachmentMenuOpen ? <X size={19} /> : <Plus size={20} />}
+          </button>
+
+          {attachmentMenuOpen && (
+            <div className="attachment-menu">
+              <label className="attachment-option">
+                <span className="attachment-option-icon">📷</span>
+                <span><strong>Foto</strong><small>JPG, PNG, WEBP</small></span>
+                <input type="file" accept="image/*" onChange={handleFileSelect} />
+              </label>
+              <label className="attachment-option">
+                <span className="attachment-option-icon">📄</span>
+                <span><strong>Dokumen</strong><small>PDF, DOC, TXT</small></span>
+                <input type="file" accept=".pdf,.doc,.docx,.txt" onChange={handleFileSelect} />
+              </label>
+              <label className="attachment-option">
+                <span className="attachment-option-icon">📎</span>
+                <span><strong>File</strong><small>File lainnya</small></span>
+                <input type="file" onChange={handleFileSelect} />
+              </label>
+            </div>
+          )}
+
           <input
-            type="text"
-            value={input}
-            placeholder="Tulis pesan untuk Erza..."
-            onChange={(event) => setInput(event.target.value)}
+            value={message}
+            disabled={loading}
+            onChange={(event) =>
+              setMessage(
+                event.target.value,
+              )
+            }
             onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                sendMessage();
+              if (
+                event.key ===
+                  "Enter" &&
+                !event.shiftKey
+              ) {
+                event.preventDefault();
+                handleSend();
               }
             }}
+            placeholder={
+              loading
+                ? "Erza sedang berpikir..."
+                : "Tulis pesan untuk Erza..."
+            }
           />
 
           <button
-            onClick={sendMessage}
+            className={`mic-button ${
+              listening ? "recording" : ""
+            }`}
+            aria-label={
+              listening
+                ? "Sedang mendengarkan"
+                : "Bicara dengan Erza"
+            }
+            onClick={startVoiceInput}
             disabled={loading}
+            title={
+              listening
+                ? "Sedang mendengarkan..."
+                : "Bicara dengan Erza"
+            }
           >
-            {loading ? "..." : "Kirim"}
+            <Mic size={19} />
           </button>
-        </footer>
 
+          <button
+            className={`mic-button ${
+              voiceEnabled ? "voice-enabled" : ""
+            }`}
+            aria-label={
+              voiceEnabled
+                ? "Matikan suara Erza"
+                : "Nyalakan suara Erza"
+            }
+            onClick={toggleVoiceOutput}
+            disabled={loading}
+            title={
+              voiceEnabled
+                ? "Suara Erza aktif"
+                : "Suara Erza mati"
+            }
+          >
+            {voiceEnabled ? "🔊" : "🔇"}
+          </button>
+
+          <button
+            className={`send-button ${
+              message.trim() &&
+              !loading
+                ? "active"
+                : ""
+            }`}
+            onClick={
+              handleSend
+            }
+            disabled={
+              (!message.trim() && !attachment) ||
+              loading
+            }
+            aria-label="Kirim"
+          >
+            <Send size={18} />
+          </button>
+        </div>
+
+        <p className="composer-note">
+          Erza AI dapat membantu
+          dengan bisnis, coding,
+          analisis, ide, dan berbagai
+          kebutuhan Papa.
+        </p>
       </div>
     </div>
   );
