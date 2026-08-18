@@ -14,7 +14,7 @@ app.use(
   })
 );
 
-app.use(express.json());
+app.use(express.json({ limit: "25mb" }));
 
 const groq = new Groq({
   apiKey: process.env.GROQ_API_KEY,
@@ -31,7 +31,16 @@ const supabase = createClient(
 
 app.post("/api/chat", async (req, res) => {
   try {
-    const { message, sessionId, userId } = req.body;
+    const { message, sessionId, userId, attachment } = req.body as {
+      message?: string;
+      sessionId?: string;
+      userId?: string;
+      attachment?: {
+        name?: string;
+        type?: string;
+        data?: string;
+      } | null;
+    };
 
     if (!userId || !userId.trim()) {
   return res.status(400).json({
@@ -41,13 +50,25 @@ app.post("/api/chat", async (req, res) => {
 
     console.log("CHAT MASUK:", message);
 
-    if (!message || !message.trim()) {
+    const text =
+      typeof message === "string"
+        ? message.trim()
+        : "";
+
+    const hasAttachment = Boolean(
+      attachment &&
+      typeof attachment.name === "string" &&
+      typeof attachment.type === "string" &&
+      typeof attachment.data === "string" &&
+      attachment.data.length > 0,
+    );
+
+    if (!text && !hasAttachment) {
       return res.status(400).json({
-        error: "Message is required",
+        error: "Message atau attachment diperlukan",
       });
     }
 
-const text = message.trim();
 const lowerText = text.toLowerCase();
 let currentSessionId = sessionId;
 
@@ -83,9 +104,11 @@ if (!currentSessionId) {
       .from("chat_sessions")
       .insert({
   title:
-    text.length > 50
-      ? text.slice(0, 50) + "..."
-      : text,
+    text
+      ? text.length > 50
+        ? text.slice(0, 50) + "..."
+        : text
+      : attachment?.name || "Lampiran baru",
   user_id: userId,
 })
       .select()
@@ -107,7 +130,11 @@ const { error: userMessageError } = await supabase
   .insert({
     session_id: currentSessionId,
     role: "user",
-    content: text,
+    content:
+      text +
+      (hasAttachment
+        ? `${text ? "\n\n" : ""}📎 ${attachment!.name}`
+        : ""),
   });
 
 if (userMessageError) {
@@ -421,8 +448,69 @@ if (isMemoryRequest) {
     // GROQ
     // ========================================
 
+    let model = "openai/gpt-oss-20b";
+
+    let userContent: any = text;
+
+    if (hasAttachment) {
+      const fileName = attachment!.name!;
+      const mimeType = attachment!.type!;
+      const base64Data = attachment!.data!;
+
+      if (base64Data.length > 18_000_000) {
+        return res.status(413).json({
+          error: "Gambar terlalu besar. Pilih foto yang lebih kecil.",
+        });
+      }
+
+      if (mimeType.startsWith("image/")) {
+        model = "qwen/qwen3.6-27b";
+        const imageDataUrl = `data:${mimeType};base64,${base64Data}`;
+
+        userContent = [
+          {
+            type: "text",
+            text:
+              text ||
+              `Analisis foto "${fileName}" ini. Jelaskan apa yang terlihat secara jelas dalam bahasa Indonesia.`,
+          },
+          {
+            type: "image_url",
+            image_url: { url: imageDataUrl },
+          },
+        ];
+
+        console.log("📎 ATTACHMENT RECEIVED");
+        console.log("   Nama :", fileName);
+        console.log("   MIME :", mimeType);
+        console.log("   Base64 chars :", base64Data.length);
+        console.log("🖼️ IMAGE DETECTED");
+        console.log("🧠 VISION MODEL:", model);
+      } else if (
+        mimeType === "text/plain" ||
+        mimeType === "text/csv" ||
+        fileName.toLowerCase().endsWith(".txt") ||
+        fileName.toLowerCase().endsWith(".csv")
+      ) {
+        const decoded = Buffer.from(base64Data, "base64").toString("utf8");
+        const limited =
+          decoded.length > 100000
+            ? decoded.slice(0, 100000) + "\n\n[File dipotong.]"
+            : decoded;
+        userContent = text
+          ? `${text}\n\nIsi file "${fileName}":\n${limited}`
+          : `Analisis isi file "${fileName}":\n\n${limited}`;
+      } else {
+        return res.status(415).json({
+          error: "Untuk sekarang Erza mendukung gambar dan TXT/CSV. PDF/DOC/DOCX kita aktifkan berikutnya.",
+        });
+      }
+    }
+
+    console.log(`⚡ Menghubungi Groq (${model})...`);
+
     const completion = await groq.chat.completions.create({
-      model: "openai/gpt-oss-20b",
+      model,
 
       messages: [
         {
@@ -474,9 +562,12 @@ Jika informasi tidak ada di memory, katakan dengan jujur bahwa kamu belum menget
 
         {
           role: "user",
-          content: text,
+          content: userContent,
         },
       ],
+      temperature: hasAttachment ? 0.7 : 0.6,
+      max_completion_tokens: 2048,
+      stream: false,
     });
 
     const answer =
@@ -523,6 +614,19 @@ return res.json({
           : "Terjadi kesalahan pada Erza AI.",
     });
   }
+});
+
+// ========================================
+// HEALTH
+// ========================================
+
+app.get("/api/health", (_req, res) => {
+  res.json({
+    success: true,
+    message: "Erza AI backend aktif",
+    chatModel: "openai/gpt-oss-20b",
+    visionModel: "qwen/qwen3.6-27b",
+  });
 });
 
 // ========================================
