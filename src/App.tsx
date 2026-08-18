@@ -15,40 +15,6 @@ import {
 import { supabase } from "./lib/supabase";
 import "./App.css";
 
-type SpeechRecognitionEventLike = Event & {
-  results: {
-    [index: number]: {
-      [index: number]: {
-        transcript: string;
-      };
-    };
-  };
-};
-
-type SpeechRecognitionErrorEventLike = Event & {
-  error?: string;
-};
-
-type SpeechRecognitionInstance = {
-  lang: string;
-  continuous: boolean;
-  interimResults: boolean;
-  start: () => void;
-  stop: () => void;
-  onresult: ((event: SpeechRecognitionEventLike) => void) | null;
-  onerror: ((event: SpeechRecognitionErrorEventLike) => void) | null;
-  onend: (() => void) | null;
-};
-
-type SpeechRecognitionConstructor = new () => SpeechRecognitionInstance;
-
-declare global {
-  interface Window {
-    SpeechRecognition?: SpeechRecognitionConstructor;
-    webkitSpeechRecognition?: SpeechRecognitionConstructor;
-  }
-}
-
 type Message = {
   id: string;
   role: "erza" | "user";
@@ -108,8 +74,6 @@ const SUGGESTIONS = [
 function App() {
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
-  const [listening, setListening] = useState(false);
-  const [voiceEnabled, setVoiceEnabled] = useState(true);
   const [attachment, setAttachment] = useState<File | null>(null);
   const [attachmentPreview, setAttachmentPreview] = useState<string | null>(null);
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
@@ -131,173 +95,6 @@ function App() {
   const [userId] = useState<string>(() =>
     getGuestUserId(),
   );
-
-  // ========================================
-  // VOICE
-  // ========================================
-
-  function getSpeechRecognition() {
-    if (typeof window === "undefined") return null;
-
-    const Recognition =
-      window.SpeechRecognition ||
-      window.webkitSpeechRecognition;
-
-    return Recognition ? new Recognition() : null;
-  }
-
-  function startVoiceInput() {
-    if (loading || listening) return;
-
-    const recognition = getSpeechRecognition();
-
-    if (!recognition) {
-      alert(
-        "Browser Papa belum mendukung voice input. Gunakan Chrome atau Edge versi terbaru.",
-      );
-      return;
-    }
-
-    recognition.lang = "id-ID";
-    recognition.continuous = false;
-    recognition.interimResults = false;
-
-    recognition.onresult = (event) => {
-      const transcript =
-        event.results[0]?.[0]?.transcript?.trim();
-
-      if (transcript) {
-        setMessage((current) =>
-          current.trim()
-            ? `${current.trim()} ${transcript}`
-            : transcript,
-        );
-      }
-    };
-
-    recognition.onerror = (event) => {
-      console.error("🎙️ Voice input error:", event.error);
-      setListening(false);
-    };
-
-    recognition.onend = () => {
-      setListening(false);
-    };
-
-    try {
-      setListening(true);
-      recognition.start();
-    } catch (error) {
-      console.error("🎙️ Voice start error:", error);
-      setListening(false);
-    }
-  }
-
-  function toggleVoiceOutput() {
-    setVoiceEnabled((current) => {
-      const next = !current;
-
-      if (!next && "speechSynthesis" in window) {
-        window.speechSynthesis.cancel();
-      }
-
-      return next;
-    });
-  }
-
-  function speakText(text: string) {
-    if (
-      !voiceEnabled ||
-      typeof window === "undefined" ||
-      !("speechSynthesis" in window)
-    ) {
-      return;
-    }
-
-    const cleaned = text
-      .replace(/```[\s\S]*?```/g, " ")
-      .replace(/[`*_#>]/g, " ")
-      .replace(/\s+/g, " ")
-      .trim();
-
-    if (!cleaned) return;
-
-    window.speechSynthesis.cancel();
-
-    const utterance =
-      new SpeechSynthesisUtterance(cleaned);
-
-    const voices = window.speechSynthesis.getVoices();
-
-    // Prioritaskan voice laki-laki berbahasa Indonesia.
-    const maleIdVoice = voices.find((voice) => {
-      const name = voice.name.toLowerCase();
-      const lang = voice.lang.toLowerCase();
-
-      return (
-        (lang.startsWith("id") ||
-          name.includes("indonesia")) &&
-        (
-          name.includes("male") ||
-          name.includes("pria") ||
-          name.includes("man") ||
-          name.includes("laki")
-        )
-      );
-    });
-
-    // Fallback ke voice Indonesia apa pun.
-    const anyIdVoice = voices.find((voice) => {
-      const lang = voice.lang.toLowerCase();
-      const name = voice.name.toLowerCase();
-
-      return (
-        lang.startsWith("id") ||
-        name.includes("indonesia")
-      );
-    });
-
-    // Fallback terakhir: voice laki-laki apa pun yang tersedia.
-    const anyMaleVoice = voices.find((voice) => {
-      const name = voice.name.toLowerCase();
-
-      return (
-        name.includes("male") ||
-        name.includes("man") ||
-        name.includes("pria") ||
-        name.includes("laki")
-      );
-    });
-
-    const selectedVoice =
-      maleIdVoice ||
-      anyIdVoice ||
-      anyMaleVoice;
-
-    if (selectedVoice) {
-      utterance.voice = selectedVoice;
-      utterance.lang = selectedVoice.lang;
-    } else {
-      utterance.lang = "id-ID";
-    }
-
-    utterance.rate = 0.96;
-    utterance.pitch = 0.92;
-    utterance.volume = 1;
-
-    window.speechSynthesis.speak(utterance);
-  }
-
-  useEffect(() => {
-    return () => {
-      if (
-        typeof window !== "undefined" &&
-        "speechSynthesis" in window
-      ) {
-        window.speechSynthesis.cancel();
-      }
-    };
-  }, []);
 
   // ========================================
   // LOAD AWAL
@@ -590,7 +387,7 @@ function App() {
   ) {
     const apiUrl =
       import.meta.env.VITE_API_URL ||
-      "http://localhost:3001";
+      window.location.origin;
 
     console.log(
       "⚡ Menghubungi Erza backend:",
@@ -973,8 +770,6 @@ function App() {
         ...current,
         erzaMessage,
       ]);
-
-      speakText(answer);
 
       // ====================================
       // SIMPAN JAWABAN ERZA
@@ -1564,43 +1359,11 @@ function App() {
           />
 
           <button
-            className={`mic-button ${
-              listening ? "recording" : ""
-            }`}
-            aria-label={
-              listening
-                ? "Sedang mendengarkan"
-                : "Bicara dengan Erza"
-            }
-            onClick={startVoiceInput}
+            className="mic-button"
+            aria-label="Voice"
             disabled={loading}
-            title={
-              listening
-                ? "Sedang mendengarkan..."
-                : "Bicara dengan Erza"
-            }
           >
             <Mic size={19} />
-          </button>
-
-          <button
-            className={`mic-button ${
-              voiceEnabled ? "voice-enabled" : ""
-            }`}
-            aria-label={
-              voiceEnabled
-                ? "Matikan suara Erza"
-                : "Nyalakan suara Erza"
-            }
-            onClick={toggleVoiceOutput}
-            disabled={loading}
-            title={
-              voiceEnabled
-                ? "Suara Erza aktif"
-                : "Suara Erza mati"
-            }
-          >
-            {voiceEnabled ? "🔊" : "🔇"}
           </button>
 
           <button
